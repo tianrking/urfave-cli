@@ -1,0 +1,65 @@
+name: Codex boundary format and minimum correction
+on:
+  push:
+    branches: [codex/urfave-native-prepare]
+permissions:
+  contents: read
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: b91f4b7ab5140e788e352761547f11456b0e896a
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          cache: false
+      - name: Format and verify frozen regression against both sources
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/evidence"
+          evidence="$RUNNER_TEMP/evidence"
+          go version > "$evidence/go-version.txt"
+          gofmt -w command_parse.go command_stop_boundary_test.go
+          cp command_parse.go command_stop_boundary_test.go "$evidence/"
+          git diff > "$evidence/format.diff"
+          cp command_parse.go "$RUNNER_TEMP/fixed.go"
+          git show 2f64589904992914a49b1c1869eba269e580bc5d:command_parse.go > command_parse.go
+          sha256sum command_parse.go command_stop_boundary_test.go > "$evidence/original-before.txt"
+          set +e
+          go test -json -count=1 -run '^TestCommand_StopOnNthArg_(PreservesBoundaryTokens|PersistentFlagsBeforeBoundary|Process)$' . > "$evidence/original.jsonl" 2> "$evidence/original-stderr.txt"
+          echo "$?" > "$evidence/original-exit.txt"
+          set -e
+          sha256sum -c "$evidence/original-before.txt" > "$evidence/original-after-check.txt"
+          cp "$RUNNER_TEMP/fixed.go" command_parse.go
+          sha256sum command_parse.go command_stop_boundary_test.go > "$evidence/fixed-before.txt"
+          set +e
+          go test -json -count=1 -run '^TestCommand_StopOnNthArg_(PreservesBoundaryTokens|PersistentFlagsBeforeBoundary|Process)$' . > "$evidence/fixed.jsonl" 2> "$evidence/fixed-stderr.txt"
+          echo "$?" > "$evidence/fixed-exit.txt"
+          set -e
+          sha256sum -c "$evidence/fixed-before.txt" > "$evidence/fixed-after-check.txt"
+          EVIDENCE="$evidence" python3 - <<'PY'
+          import json, os, pathlib
+          p = pathlib.Path(os.environ['EVIDENCE'])
+          results = {}
+          for label in ['original', 'fixed']:
+              events = [json.loads(s) for s in (p / (label + '.jsonl')).read_text().splitlines() if s.startswith('{')]
+              tests = {e['Test']: e['Action'] for e in events if e.get('Test') and e.get('Action') in ('pass', 'fail', 'skip')}
+              leaf_names = [n for n in tests if n.endswith('/root') or n.endswith('/subcommand') or n == 'TestCommand_StopOnNthArg_PersistentFlagsBeforeBoundary' or n.startswith('TestCommand_StopOnNthArg_Process/')]
+              results[label] = {'rawExit': int((p / (label + '-exit.txt')).read_text()), 'scenarios': {n: tests[n] for n in leaf_names}, 'namedResults': tests}
+              assert len(leaf_names) == 21, results[label]
+              assert not any(v == 'skip' for v in tests.values()), results[label]
+              if label == 'original':
+                  assert results[label]['rawExit'] == 1 and sum(tests[n] == 'fail' for n in leaf_names) == 17, results[label]
+              else:
+                  assert results[label]['rawExit'] == 0 and all(v == 'pass' for v in tests.values()), results[label]
+          (p / 'prepare-summary.json').write_text(json.dumps(results, indent=2))
+          print(json.dumps(results, indent=2))
+          PY
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: boundary-prepare
+          path: ${{ runner.temp }}/evidence
