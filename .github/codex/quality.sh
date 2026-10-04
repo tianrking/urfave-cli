@@ -27,7 +27,6 @@ echo "$expected  $RUNNER_TEMP/lint.tar.gz" | sha256sum -c - > "$evidence/tools/l
 tar -xzf "$RUNNER_TEMP/lint.tar.gz" -C "$RUNNER_TEMP"
 cp "$RUNNER_TEMP/golangci-lint-2.14.0-linux-amd64/golangci-lint" "$GOBIN/"
 golangci-lint --version > "$evidence/tools/lint-version.txt"
-gfmrun --version > "$evidence/tools/gfmrun-version.txt"
 go version -m "$GOBIN/goimports" > "$evidence/tools/goimports-version.txt"
 go version -m "$GOBIN/gfmrun" > "$evidence/tools/gfmrun-module-version.txt"
 git worktree add --detach "$RUNNER_TEMP/baseline" 2f64589904992914a49b1c1869eba269e580bc5d
