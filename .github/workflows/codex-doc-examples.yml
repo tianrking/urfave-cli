@@ -1,0 +1,62 @@
+name: Codex actual parser documentation examples
+on:
+  push:
+    branches: [codex/urfave-doc-examples]
+permissions:
+  contents: read
+jobs:
+  examples:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: support
+      - uses: actions/checkout@v7
+        with:
+          ref: 9c76dcd12ecdc7d5542d7e522032a08fc6713674
+          path: source
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          cache: false
+      - name: Run existing argument flag and subcommand examples on both sources
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/evidence"
+          support="$GITHUB_WORKSPACE/support/.github/codex"
+          mkdir -p "$evidence"
+          export GOBIN="$RUNNER_TEMP/bin"
+          export PATH="$GOBIN:$PATH"
+          go install github.com/urfave/gfmrun/cmd/gfmrun@v1.3.2 > "$evidence/tool-install.log" 2>&1
+          go version > "$evidence/go-version.txt"
+          go version -m "$GOBIN/gfmrun" > "$evidence/tool-module-version.txt"
+          source="$PWD"
+          git worktree add --detach "$RUNNER_TEMP/baseline" 2f64589904992914a49b1c1869eba269e580bc5d
+          for label in baseline fixed; do
+            if [ "$label" = baseline ]; then cd "$RUNNER_TEMP/baseline"; else cd "$source"; fi
+            python "$support/manifest.py" "$evidence/$label-before.json"
+            for doc in arguments/basics flags/short-options subcommands/basics; do
+              name="${doc//\//-}"
+              set +e
+              make gfmrun "FLAGS=docs/v3/examples/$doc.md" > "$evidence/$label-$name.log" 2> "$evidence/$label-$name-stderr.txt"
+              echo "$?" > "$evidence/$label-$name-exit.txt"
+              set -e
+            done
+            python "$support/manifest.py" "$evidence/$label-after.json" "$evidence/$label-before.json"
+          done
+          EVIDENCE="$evidence" python - <<'PY'
+          import json, os, pathlib
+          p = pathlib.Path(os.environ['EVIDENCE'])
+          summary = {f.name[:-9]: int(f.read_text()) for f in p.glob('*-exit.txt')}
+          (p / 'example-summary.json').write_text(json.dumps(summary, indent=2))
+          print(json.dumps(summary, indent=2))
+          assert all(v == 0 for v in summary.values()), summary
+          PY
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: parser-doc-examples
+          path: ${{ runner.temp }}/evidence
