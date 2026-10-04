@@ -2,8 +2,12 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"io"
+	"os"
+	"os/exec"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -142,4 +146,49 @@ func TestCommand_StopOnNthArg_PersistentFlagsBeforeBoundary(t *testing.T) {
 	assert.Equal(t, 1, beforeCalls)
 	assert.Equal(t, 1, flagCalls)
 	assert.Equal(t, 1, actionCalls)
+}
+
+func TestCommand_StopOnNthArg_Process(t *testing.T) {
+	const marker = "URFAVE_TEST_STOP_BOUNDARY_CHILD"
+	if os.Getenv(marker) == "1" {
+		cmd := &Command{
+			Name: "exec", StopOnNthArg: intPtr(1),
+			Flags: []Flag{&BoolFlag{Name: "verbose"}},
+			Writer: io.Discard, ErrWriter: os.Stderr,
+			Action: func(_ context.Context, c *Command) error {
+				return json.NewEncoder(os.Stdout).Encode(struct {
+					Args []string
+					Set  bool
+				}{c.Args().Slice(), c.IsSet("verbose")})
+			},
+		}
+		if err := cmd.Run(context.Background(), append([]string{"exec"}, os.Args[3:]...)); err != nil {
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
+	executable, err := os.Executable()
+	require.NoError(t, err)
+	for _, args := range [][]string{
+		{"host", "", "--verbose", "tail"},
+		{"host", "--", "--verbose", "tail"},
+	} {
+		t.Run(args[1], func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			argv := append([]string{"-test.run=^TestCommand_StopOnNthArg_Process$", "--"}, args...)
+			child := exec.CommandContext(ctx, executable, argv...)
+			child.Env = append(os.Environ(), marker+"=1")
+			output, err := child.Output()
+			require.NoError(t, err)
+			var got struct {
+				Args []string
+				Set  bool
+			}
+			require.NoError(t, json.Unmarshal(output, &got))
+			assert.Equal(t, args, got.Args)
+			assert.False(t, got.Set)
+		})
+	}
 }
