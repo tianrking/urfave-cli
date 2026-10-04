@@ -1,0 +1,70 @@
+name: Codex original boundary regression
+on:
+  push:
+    branches: [codex/urfave-native-red]
+permissions:
+  contents: read
+jobs:
+  original:
+    strategy:
+      fail-fast: false
+      matrix:
+        go: ['1.22.12', stable]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ba91952f0655b9345d5061eb3bb63e9e0d1a5efa
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ matrix.go }}
+          cache: false
+      - name: Preserve source and execute original regression
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/evidence"
+          evidence="$RUNNER_TEMP/evidence"
+          git rev-parse HEAD > "$evidence/head.txt"
+          git status --porcelain > "$evidence/status-before.txt"
+          git ls-files -z | xargs -0 sha256sum > "$evidence/sha256-before.txt"
+          git ls-files -s > "$evidence/blobs-before.txt"
+          git diff --exit-code 2f64589904992914a49b1c1869eba269e580bc5d -- command_parse.go
+          go version > "$evidence/go-version.txt"
+          go env > "$evidence/go-env.txt"
+          set +e
+          go test -json -count=1 -run '^TestCommand_StopOnNthArg_(PreservesBoundaryTokens|PersistentFlagsBeforeBoundary|Process)$' . > "$evidence/default.jsonl" 2> "$evidence/default-stderr.txt"
+          echo "$?" > "$evidence/default-exit.txt"
+          go test -tags urfave_cli_no_template -json -count=1 -run '^TestCommand_StopOnNthArg_(PreservesBoundaryTokens|PersistentFlagsBeforeBoundary|Process)$' . > "$evidence/no-template.jsonl" 2> "$evidence/no-template-stderr.txt"
+          echo "$?" > "$evidence/no-template-exit.txt"
+          set -e
+          git ls-files -z | xargs -0 sha256sum > "$evidence/sha256-after.txt"
+          git ls-files -s > "$evidence/blobs-after.txt"
+          git status --porcelain > "$evidence/status-after.txt"
+          diff "$evidence/sha256-before.txt" "$evidence/sha256-after.txt"
+          diff "$evidence/blobs-before.txt" "$evidence/blobs-after.txt"
+          git diff --exit-code
+          EVIDENCE="$evidence" python3 - <<'PY'
+          import json, os, pathlib
+          evidence = pathlib.Path(os.environ['EVIDENCE'])
+          results = {}
+          for label in ['default', 'no-template']:
+              events = [json.loads(s) for s in (evidence / (label + '.jsonl')).read_text().splitlines() if s.startswith('{')]
+              tests = {e['Test']: e['Action'] for e in events if e.get('Test') and e.get('Action') in ('pass', 'fail', 'skip')}
+              controls = [n for n in tests if '/separator_before_boundary/' in n or '/normal_parsing_with_empty_arguments/' in n]
+              failures = [n for n, result in tests.items() if result == 'fail']
+              raw_exit = int((evidence / (label + '-exit.txt')).read_text())
+              results[label] = {'rawExit': raw_exit, 'controls': {n: tests[n] for n in controls}, 'failedTestNames': failures, 'namedResults': tests}
+              assert raw_exit == 1, results[label]
+              assert len(controls) == 4 and all(tests[n] == 'pass' for n in controls), results[label]
+              assert len([n for n in failures if n.endswith('/root') or n.endswith('/subcommand')]) == 14, results[label]
+              assert tests.get('TestCommand_StopOnNthArg_PersistentFlagsBeforeBoundary') == 'fail', results[label]
+              assert len([n for n in failures if n.startswith('TestCommand_StopOnNthArg_Process/')]) == 2, results[label]
+          (evidence / 'red-summary.json').write_text(json.dumps(results, indent=2))
+          print(json.dumps(results, indent=2))
+          PY
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: original-${{ matrix.go }}
+          path: ${{ runner.temp }}/evidence
