@@ -5,6 +5,22 @@ import sys
 
 p = pathlib.Path(sys.argv[1])
 summary = {}
+ordinary_skips = {
+    'TestCommand_BeforeAfterFuncShellCompletion',
+    'TestIntFlagExt/valid_hex',
+    'TestIntFlagExt/valid_hex_default',
+    'TestFlagValue',
+    "TestHelpCommand_FullName/cmd_help's_FullName",
+    "TestHelpCommand_FullName/cmd_help's_FullName_via_flag",
+}
+template_skips = {
+    'TestShowCommandHelp_HelpPrinterCustom/custom_template_command',
+    'TestShowCommandHelp_Customtemplate',
+    'TestShowRootCommandHelp_HelpPrinter/custom-template-command',
+    'TestShowRootCommandHelp_HelpPrinterCustom/custom-template-command',
+    'TestShowRootCommandHelp_CustomAppTemplate',
+    'TestPrintHelpCustomTemplateError',
+}
 for label in ['original-default', 'original-no-template', 'fixed-default', 'fixed-no-template', 'full-default', 'full-no-template']:
     events = [json.loads(s) for s in (p / (label + '.log')).read_text().splitlines() if s.startswith('{')]
     tests = {e['Test']: e['Action'] for e in events if e.get('Test') and e.get('Action') in ('pass', 'fail', 'skip')}
@@ -17,7 +33,11 @@ for label in ['original-default', 'original-no-template', 'fixed-default', 'fixe
         assert sum(tests[n] == 'fail' for n in scenarios) == 17, summary[label]
         assert sum(tests[n] == 'pass' for n in scenarios) == 4, summary[label]
     else:
-        assert raw == 0 and tests and all(v == 'pass' for v in tests.values()), summary[label]
+        expected_skips = set()
+        if label.startswith('full'):
+            expected_skips = ordinary_skips | (template_skips if label.endswith('no-template') else set())
+        assert raw == 0 and tests and not any(v == 'fail' for v in tests.values()), summary[label]
+        assert {n for n, v in tests.items() if v == 'skip'} == expected_skips, summary[label]
         assert packages and all(v == 'pass' for v in packages.values()), summary[label]
 for label in ['vet', 'binary-size', 'diffcheck']:
     raw = int((p / (label + '-exit.txt')).read_text())
